@@ -26,7 +26,7 @@ int strlistlen(char **strlist) {
 
 int how_many_commands(char ***commands_list) {
     int count = 0;
-    char **temp = NULL;
+    char **temp = commands_list[count];
     while (temp != NULL) {
         count++;
         temp = commands_list[count];
@@ -101,32 +101,48 @@ void free_commands_list(char ***commands_list) {
 
 /*
  * Execute one command based on arguments list given
- * If successful return 0
  * If error occurs return -1    
+ * If successful, return one of the following
+ * 0 if a regular file or a print mode, or nothing was executed
+ * 1 if the command is 'exit'
+ * 2 if the command is a mode change to sequential
+ * 3 if the command is a mode change to parallel
+ * Also change *mode if the command was a mode change
  */
 int execute_one(char **argv, int *mode, int *exit_flag) {
     if (argv[0] == NULL) { // No arguments, no execution
         return 0; 
     } else if (strcmp(argv[0],"exit") == 0) { // exit command
-        *exit_flag = 1;
-        return 0;
+        if (argv[1] == NULL) { // The command is just 'exit'
+            *exit_flag = 1;
+            return 1;
+        } else {  // some giberrish after 'exit'. print error
+            printf("Command not recognized. Try 'exit' instead\n");
+            return -1;    
+        }                
     } else if (strcmp(argv[0], "mode") == 0) { // mode command
         if (argv[1] == NULL) { // print current mode
             if (*mode == 0) {
                 printf("Shell is currently in sequential mode.\n");
+                return 0;
             } else if (*mode == 1) {
                 printf("Shell is currently in parallel mode.\n");
+                return 0;
             } else {
                 printf("Unknown mode. Something have broken.\n");
                 return -1;
             }
-        } else if (strcmp(argv[1], "s") == 0 || strcmp(argv[1], "sequential") == 0) {
+        } else if (strcmp(argv[1], "s") == 0 || 
+                    strcmp(argv[1], "sequential") == 0) { // mode change
             *mode = 0;
-        } else if (strcmp(argv[1], "p") == 0 || strcmp(argv[1], "parallel") == 0) {
+            return 2;
+        } else if (strcmp(argv[1], "p") == 0 || 
+                    strcmp(argv[1], "parallel") == 0) { // mode change
             *mode = 1;
+            return 3;
         } else {
-            printf("Command not recognized. Try 'mode s' or 'mode p'.\n");
-            return 0;
+            printf("Command not recognized. Try 'mode s' or 'mode p' instead\n");
+            return -1;
         }
     } else { // execute file
         int status = 0;
@@ -147,6 +163,7 @@ int execute_all(char ***commands_list, int *mode) {
     int exit_flag = 0;
     int counter = 0;
     int number_of_commands = how_many_commands(commands_list);
+    printf("Number of commands is %d\n",number_of_commands);  
     if (*mode == 0) { // sequential execution    
         char **command = commands_list[counter];
         while (command != NULL) {
@@ -167,27 +184,44 @@ int execute_all(char ***commands_list, int *mode) {
         pid_t pid = 0;
         int status = 0;
         while (command != NULL) { // Keep reading commands and forking
-            pid = fork(); 
+            printf("Number of commands is %d\n",number_of_commands);            
+            pid = fork();
+             
             if (pid == 0) { // Child process, execute command
-                execute_one(command, mode, &exit_flag);
-                exit(exit_flag); // exit
+                printf("Parallel mode. Child process, command number: %d\n",counter);
+                int result = execute_one(command, mode, &exit_flag);
+                if (result == 1) {      // exit command received
+                    exit(1);            
+                } else if (result == 2) { // mode change to sequential
+                    exit(2);
+                } else if (result == 3) { // mode change to parallel
+                    exit(3);
+                } else { // do nothing
+                    exit(0);
+                }
             } else { // Parent process. Fork for next job
                 pid_list[counter] = pid;
                 counter++;                
                 command = commands_list[counter];
             }    
         }  
-        for (int i=0; i < number_of_commands; i++) { // wait for each child to complete
-            waitpid(pid_list[i], &status,0); 
+        printf("Stopped generating child process\n");
+        while (number_of_commands > 0) { // wait for each child to complete
+            wait(&status); 
             printf("The exit value of the child is: %d\n",status);
             if (WEXITSTATUS(status) == 1) {
                 exit_flag = 1;
+            } else if (WEXITSTATUS(status) == 2) {
+                *mode = 0;
+            } else if (WEXITSTATUS(status) == 3) {
+                *mode = 1;
+            } else {
             }
+            number_of_commands--;
         }
         free_commands_list(commands_list);
-        return 0;
     } 
-    if (exit_flag == 1) { // exit command read at somepoint
+    if (exit_flag == 1) { // exit command received somewhere in the list
         exit(0);
     }
     return 0;
