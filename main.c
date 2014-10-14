@@ -1,3 +1,9 @@
+/*
+ * Dang Minh Nguyen
+ * COSC301 Fall 2014 Project 02
+ */
+
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -12,7 +18,11 @@
 #include <poll.h>
 #include <signal.h>
 
+#include "list.h"
+
 const char prompt[] = "> ";
+
+char *check_path(struct node **, char *);
 
 int strlistlen(char **strlist) {
     int count = 0;
@@ -34,7 +44,7 @@ int how_many_commands(char ***commands_list) {
     return count;
 }
 
-void replace_hash(char *string) { // Replace first # with \0
+void ignore_comment(char *string) { // Replace first # with \0
     int length = strlen(string);
     for (int i = 0; i < length; i++) { 
         if (string[i] == '#') {
@@ -47,14 +57,10 @@ void replace_hash(char *string) { // Replace first # with \0
 char** tokenify(const char *input, const char *delimiter) {
     int count = 0;
     char *scopy = strdup(input);
-
     int length = strlen(scopy);
-    if (scopy[length-1] == '\n') { // Remove EOL char from input
-        scopy[length-1] = '\0';
-    }
     
     char *token = strtok(scopy,delimiter); // get first token
-    char **tok_list = malloc(length * sizeof(char *));  
+    char **tok_list = malloc((length + 1) * sizeof(char *));  
     while (token != NULL) {        
         tok_list[count] = strdup(token); 
         count += 1;
@@ -109,7 +115,7 @@ void free_commands_list(char ***commands_list) {
  * 3 if the command is a mode change to parallel
  * Also change *mode if the command was a mode change
  */
-int execute_one(char **argv, int *mode, int *exit_flag) {
+int execute_one(char **argv, int *mode, int *exit_flag, struct node **path_list) {
     if (argv[0] == NULL) { // No arguments, no execution
         return 0; 
     } else if (strcmp(argv[0],"exit") == 0) { // exit command
@@ -123,13 +129,13 @@ int execute_one(char **argv, int *mode, int *exit_flag) {
     } else if (strcmp(argv[0], "mode") == 0) { // mode command
         if (argv[1] == NULL) { // print current mode
             if (*mode == 0) {
-                printf("Shell is currently in sequential mode.\n");
+                printf("Shell is currently in sequential mode\n");
                 return 0;
             } else if (*mode == 1) {
-                printf("Shell is currently in parallel mode.\n");
+                printf("Shell is currently in parallel mode\n");
                 return 0;
             } else {
-                printf("Unknown mode. Something have broken.\n");
+                printf("Unknown mode. Something have broken\n");
                 return -1;
             }
         } else if (strcmp(argv[1], "s") == 0 || 
@@ -146,11 +152,16 @@ int execute_one(char **argv, int *mode, int *exit_flag) {
         }
     } else { // execute file
         int status = 0;
+        char *temp = check_path(path_list, argv[0]);
+        char path[strlen(temp)+1];
+        strcpy(path, temp);
+        free(temp); 
         pid_t pid = fork();
+
         if (pid == 0) {  // Child process
-            if (execv(argv[0], argv) < 0) {
+            if (execv(path, argv) < 0) {
                 fprintf(stderr, "execv failed: %s\n", strerror(errno));
-                exit(0);     // Quit if execv failed
+                exit(-1);     // Quit if execv failed
             }
         }
         wait(&status);
@@ -159,7 +170,11 @@ int execute_one(char **argv, int *mode, int *exit_flag) {
     return 0;
 }
 
-int execute_all(char ***commands_list, int *mode) {
+/*
+ * Execute a list of commands
+ * Free the list before returning
+ */
+int execute_all(char ***commands_list, int *mode, struct node **path_list) {
     int exit_flag = 0;
     int counter = 0;
     int number_of_commands = how_many_commands(commands_list);
@@ -167,16 +182,14 @@ int execute_all(char ***commands_list, int *mode) {
     if (*mode == 0) { // sequential execution    
         char **command = commands_list[counter];
         while (command != NULL) {
-            printf("Printing command number %d \n",counter);
-            print_tokens(command);
-            printf("Now executing commands.\n");
-            execute_one(command, mode, &exit_flag);
-            printf("Execution complete.\n");     
+            //print_tokens(command);
+            //printf("Now executing commands.\n");
+            execute_one(command, mode, &exit_flag, path_list);
+            //printf("Execution complete.\n");     
             counter++;
             command = commands_list[counter];
         }
         free_commands_list(commands_list);
-        
         
     } else if (*mode == 1) { // parallel execution
         char **command = commands_list[counter];
@@ -188,8 +201,8 @@ int execute_all(char ***commands_list, int *mode) {
             pid = fork();
              
             if (pid == 0) { // Child process, execute command
-                printf("Parallel mode. Child process, command number: %d\n",counter);
-                int result = execute_one(command, mode, &exit_flag);
+                //printf("Parallel mode. Child process, command number: %d\n",counter);
+                int result = execute_one(command, mode, &exit_flag, path_list);
                 if (result == 1) {      // exit command received
                     exit(1);            
                 } else if (result == 2) { // mode change to sequential
@@ -205,10 +218,9 @@ int execute_all(char ***commands_list, int *mode) {
                 command = commands_list[counter];
             }    
         }  
-        printf("Stopped generating child process\n");
         while (number_of_commands > 0) { // wait for each child to complete
             wait(&status); 
-            printf("The exit value of the child is: %d\n",status);
+            // Check if shell built-in command was received
             if (WEXITSTATUS(status) == 1) {
                 exit_flag = 1;
             } else if (WEXITSTATUS(status) == 2) {
@@ -221,19 +233,27 @@ int execute_all(char ***commands_list, int *mode) {
         }
         free_commands_list(commands_list);
     } 
+
     if (exit_flag == 1) { // exit command received somewhere in the list
+        free_list(path_list);        
         exit(0);
     }
     return 0;
 }
 
 char *** parse_commands(char * input) {
-    replace_hash(input);
-    char **unparsed_commands = tokenify(input,";"); // Break input into commands by ';'    
+    int length = strlen(input);
+    if (input[length-1] == '\n') { // Remove '\n' char from input
+        input[length-1] = '\0';
+    }    
+    ignore_comment(input);
+    
+    char **unparsed_commands = tokenify(input,";"); // Break input into commands by ';' 
+                                                    // Each command is still a string   
    
     // Now we break down each command into a list of arguments
     int number_of_commands = strlistlen(unparsed_commands);
-    char ***commands_list = malloc(sizeof(char ***) * (number_of_commands + 1));
+    char ***commands_list = malloc(sizeof(char **) * (number_of_commands + 1));
     for (int i=0; i < number_of_commands; i++) {
         commands_list[i] = tokenify(unparsed_commands[i], " \n\t");
     }    
@@ -242,22 +262,87 @@ char *** parse_commands(char * input) {
     return commands_list;
 }
 
+// PART 2 FUNCTIONS
+
+struct node **get_path() {
+    struct node **path_list = malloc(sizeof(struct node *));
+    *path_list = NULL; // initialization 
+    FILE *datafile = NULL;
+    datafile = fopen("shell-config", "r");  
+    if (datafile == NULL) {
+        printf("Unable to open shell-config. No PATH option available\n");
+        return path_list;
+    } else {
+        char line_buffer[4096];
+        while(fgets(line_buffer, 4096, datafile) != NULL) { // read until EOF
+            int length = strlen(line_buffer);
+            // Remove '\n' char from line_buffer
+            if (line_buffer[length-1] == '\n') { 
+                line_buffer[length-1] = '\0';
+            }                
+            ignore_comment(line_buffer);
+            //printf("Before insert\n");
+            //print_list(path_list);
+            list_insert(line_buffer, path_list);
+            //printf("After insert\n");
+            //print_list(path_list);
+        }         
+        printf("Done reading shell-config. Added the following:\n");
+        print_list(path_list);
+    }
+    fclose(datafile);
+    return path_list;
+}
+
+// Test if file is found in one of the paths 
+// If a match is found, immediately return the full path to the file
+// If no match is found, return a copy of 'file' in the heap
+char *check_path(struct node **path_list, char *file) {
+    int lengthf = strlen(file);    
+    int counter = 0;    
+    struct node *path = *path_list;
+    struct stat buffer;
+    int status = 0;
+    printf("Checking PATH for file\n");
+    while (path != NULL) {
+        char *temp = malloc(sizeof(char) * (strlen(path->value) + lengthf + 2));
+        temp[0] = '\0'; 
+        strcat(temp, path->value);
+        strcat(temp,"/");
+        strcat(temp, file);
+        printf("Current full path is: %s\n",temp);
+        status = stat(temp, &buffer);
+        if (status == 0) { // success
+            return temp;
+        } else { 
+            // Do nothing.        
+        }
+        free(temp);
+        counter++;
+        path = path -> next;
+    }
+    char *result = malloc(sizeof(char) * (lengthf + 1));
+    strcpy(result, file);
+    return result;
+}
+// END OF PART 2 FUNCTIONS
+
 int main(int argc, char **argv) {
     int mode = 0; // 0 for sequential, 1 for parallel
-
+    struct node **path_list = get_path();
     printf("%s", prompt);
     fflush(stdout);  
     char buffer[1024];
 
-
     while (fgets(buffer, 1024, stdin) != NULL) {
         char ***commands_list = parse_commands(buffer);        
-        execute_all(commands_list, &mode);       
+        execute_all(commands_list, &mode, path_list);       
 
         // Print prompt for next command
         printf("%s", prompt);
         fflush(stdout);  
     }
+    free_list(path_list);
     printf("Shell will now exit.\n");
    
 
