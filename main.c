@@ -82,9 +82,25 @@ char** tokenify(const char *input, const char *delimiter) {
 void print_tokens(char **tokens) {
     int i = 0;
     while (tokens[i] != NULL) {
-        printf("Token %d: %s\n", i+1, tokens[i]);
+        printf("Token number %d: %s\n", i+1, tokens[i]);
         i++;
     }
+}
+
+// Return a single string from a list of arguments
+char *full_command(char **command) {
+    int finallength = 1;
+    int argn = strlistlen(command);
+    for (int i=0; i<argn; i++) {
+        finallength += strlen(command[i]) + 1;
+    }
+    char *result = malloc(sizeof(char) * finallength);
+    result[0]='\0';
+    for (int i=0; i<argn; i++) {
+        strcat(result, command[i]);
+        strcat(result, " ");
+    }
+    return result;
 }
 
 void free_tokens(char **tokens) {
@@ -103,6 +119,72 @@ void free_commands_list(char ***commands_list) {
         i++;
     }
     free(commands_list);
+}
+
+
+/*
+ * Try to execute a command as a shell built-in. 
+ * Return 1 if command is built in and executed
+ * Return 0 if command is built in but has syntax error  
+ * Return -1 if command is not built in the shell
+ */
+int execute_built_in(char **argv, int *mode, int *exit_flag) {
+    if (argv[0] == NULL) {          // No arguments, no execution
+        return 0; 
+    } else if (strcmp(argv[0],"exit") == 0) { // exit command
+        if (argv[1] == NULL) { // The command is just 'exit'
+            *exit_flag = 1;
+            return 1;
+        } else {  // some giberrish after 'exit'. print error
+            printf("Command not recognized. Try 'exit' instead\n");
+            return 0;    
+        }                
+    } else if (strcmp(argv[0], "mode") == 0) { // mode command
+        if (argv[1] == NULL) { // print current mode
+            if (*mode == 0) {
+                printf("Shell is currently in sequential mode\n");
+                return 1;
+            } else if (*mode == 1) {
+                printf("Shell is currently in parallel mode\n");
+                return 1;
+            } else {
+                printf("Unknown mode. Something have broken\n");
+                return 0;
+            }
+        } else if (strcmp(argv[1], "s") == 0 || 
+                    strcmp(argv[1], "sequential") == 0) { // mode change
+            *mode = 0;
+            return 1;
+        } else if (strcmp(argv[1], "p") == 0 || 
+                    strcmp(argv[1], "parallel") == 0) { // mode change
+            *mode = 1;
+            return 1;
+        } else {
+            printf("Command not recognized. Try 'mode s' or 'mode p' instead\n");
+            return 0;
+        }
+    }    
+    return -1;
+}
+
+// Execute a non built-in command
+int execute_nonshell(char **argv, struct node **path_list) {
+    int status = 0;
+    char *temp = check_path(path_list, argv[0]);
+    char path[strlen(temp)+1];
+    strcpy(path, temp);
+    free(temp); 
+    pid_t pid = fork();
+
+    if (pid == 0) {  // Child process
+        if (execv(path, argv) < 0) {
+            fprintf(stderr, "execv failed: %s\n", strerror(errno));
+            exit(-1);     // Quit if execv failed
+        }
+    }
+    wait(&status);
+    return 0;
+
 }
 
 /*
@@ -182,10 +264,12 @@ int execute_all(char ***commands_list, int *mode, struct node **path_list) {
     if (*mode == 0) { // sequential execution    
         char **command = commands_list[counter];
         while (command != NULL) {
-            //print_tokens(command);
-            //printf("Now executing commands.\n");
-            execute_one(command, mode, &exit_flag, path_list);
-            //printf("Execution complete.\n");     
+            if (execute_built_in(command, mode, &exit_flag) < 0) {
+                execute_nonshell(command, path_list);            
+            }            
+            //execute_one(command, mode, &exit_flag, path_list);
+            
+  
             counter++;
             command = commands_list[counter];
         }
@@ -196,40 +280,26 @@ int execute_all(char ***commands_list, int *mode, struct node **path_list) {
         pid_t pid_list[number_of_commands];
         pid_t pid = 0;
         int status = 0;
+        int child_count = 0;
         while (command != NULL) { // Keep reading commands and forking
-            printf("Number of commands is %d\n",number_of_commands);            
-            pid = fork();
-             
-            if (pid == 0) { // Child process, execute command
-                //printf("Parallel mode. Child process, command number: %d\n",counter);
-                int result = execute_one(command, mode, &exit_flag, path_list);
-                if (result == 1) {      // exit command received
-                    exit(1);            
-                } else if (result == 2) { // mode change to sequential
-                    exit(2);
-                } else if (result == 3) { // mode change to parallel
-                    exit(3);
-                } else { // do nothing
+            // only fork if command is not built-in
+            if (execute_built_in(command, mode, &exit_flag) < 0) { 
+                child_count++;                      
+                pid = fork();
+                if (pid == 0) { // Child process, execute command
+                    execute_nonshell(command, path_list);
                     exit(0);
-                }
-            } else { // Parent process. Fork for next job
-                pid_list[counter] = pid;
-                counter++;                
-                command = commands_list[counter];
-            }    
-        }  
-        while (number_of_commands > 0) { // wait for each child to complete
-            wait(&status); 
-            // Check if shell built-in command was received
-            if (WEXITSTATUS(status) == 1) {
-                exit_flag = 1;
-            } else if (WEXITSTATUS(status) == 2) {
-                *mode = 0;
-            } else if (WEXITSTATUS(status) == 3) {
-                *mode = 1;
-            } else {
+                } else { 
+                    // Parent process, do nothing
+                }    
             }
-            number_of_commands--;
+            pid_list[counter] = pid;
+            counter++;                
+            command = commands_list[counter];
+        }  
+        while (child_count > 0) { // wait for each child to complete
+            wait(&status); 
+            child_count--;
         }
         free_commands_list(commands_list);
     } 
@@ -303,14 +373,14 @@ char *check_path(struct node **path_list, char *file) {
     struct node *path = *path_list;
     struct stat buffer;
     int status = 0;
-    printf("Checking PATH for file\n");
+    //printf("Checking PATH for file\n");
     while (path != NULL) {
         char *temp = malloc(sizeof(char) * (strlen(path->value) + lengthf + 2));
         temp[0] = '\0'; 
         strcat(temp, path->value);
         strcat(temp,"/");
         strcat(temp, file);
-        printf("Current full path is: %s\n",temp);
+        //printf("Current full path is: %s\n",temp);
         status = stat(temp, &buffer);
         if (status == 0) { // success
             return temp;
