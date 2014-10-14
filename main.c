@@ -19,6 +19,7 @@
 #include <signal.h>
 
 #include "list.h"
+#include "process.h"
 
 const char prompt[] = "> ";
 
@@ -87,7 +88,7 @@ void print_tokens(char **tokens) {
     }
 }
 
-// Return a single string from a list of arguments
+// Concatenate a list of arguments into a single string
 char *full_command(char **command) {
     int finallength = 1;
     int argn = strlistlen(command);
@@ -100,6 +101,8 @@ char *full_command(char **command) {
         strcat(result, command[i]);
         strcat(result, " ");
     }
+    printf("Full command is: %s\n",result);
+    result[strlen(result)-1]='\0'; // get rid of the last space
     return result;
 }
 
@@ -171,18 +174,17 @@ int execute_built_in(char **argv, int *mode, int *exit_flag) {
 int execute_nonshell(char **argv, struct node **path_list) {
     int status = 0;
     char *temp = check_path(path_list, argv[0]);
-    char path[strlen(temp)+1];
-    strcpy(path, temp);
-    free(temp); 
+    
     pid_t pid = fork();
 
     if (pid == 0) {  // Child process
-        if (execv(path, argv) < 0) {
+        if (execv(temp, argv) < 0) {
             fprintf(stderr, "execv failed: %s\n", strerror(errno));
             exit(-1);     // Quit if execv failed
         }
     }
     wait(&status);
+    free(temp); 
     return 0;
 
 }
@@ -196,7 +198,7 @@ int execute_nonshell(char **argv, struct node **path_list) {
  * 2 if the command is a mode change to sequential
  * 3 if the command is a mode change to parallel
  * Also change *mode if the command was a mode change
- */
+ *
 int execute_one(char **argv, int *mode, int *exit_flag, struct node **path_list) {
     if (argv[0] == NULL) { // No arguments, no execution
         return 0; 
@@ -251,7 +253,7 @@ int execute_one(char **argv, int *mode, int *exit_flag, struct node **path_list)
     }
     return 0;
 }
-
+ */
 /*
  * Execute a list of commands
  * Free the list before returning
@@ -284,14 +286,18 @@ int execute_all(char ***commands_list, int *mode, struct node **path_list) {
         while (command != NULL) { // Keep reading commands and forking
             // only fork if command is not built-in
             if (execute_built_in(command, mode, &exit_flag) < 0) { 
-                child_count++;                      
+                child_count++;
+                                     
                 pid = fork();
                 if (pid == 0) { // Child process, execute command
                     execute_nonshell(command, path_list);
+                    char *command_literal = full_command(command); 
+                    printf("Process %d (%s) is completed\n",getpid(),command_literal);
                     exit(0);
                 } else { 
                     // Parent process, do nothing
                 }    
+                
             }
             pid_list[counter] = pid;
             counter++;                
