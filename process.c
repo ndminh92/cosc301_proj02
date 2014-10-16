@@ -54,16 +54,16 @@ struct process *get_process_info(int search_pid, struct process **head) {
 // Return 1 on success, 0 on fail
 int remove_process(int pid, struct process **head) {
     struct process *temp = *head;
-    if (temp != NULL) {
+    if (temp == NULL) {
         return 0;    
-    } else if (pid == temp -> pid) { // Found match first in the list, just change head pointer
+    } else if (pid == (temp -> pid)) { // Found match first in the list, just change head pointer
         *head = temp -> next;
         free(temp -> command);
         free(temp);
         return 1;
     } else {
         struct process *prev = temp;
-        temp = temp -> next;    
+        temp = prev -> next;    
         while (temp != NULL) {
             if (pid == temp -> pid) {
                 prev -> next = temp -> next; 
