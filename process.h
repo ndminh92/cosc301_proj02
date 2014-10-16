@@ -12,6 +12,8 @@ struct process{
 /* your function declarations associated with the list */
 void add_process(int pid, char *command, int paused, struct process **process_list);
 void free_process(struct process **head);
-void print_process(struct process **head) ;
-
+void print_process(struct process **head);
+int in_list(int search_pid, struct process **head);
+struct process *get_process_info(int search_pid, struct process **head);
+int remove_process(int pid, struct process **head);
 #endif // __PROCESS_H__
